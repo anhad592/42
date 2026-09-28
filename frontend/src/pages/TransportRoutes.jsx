@@ -13,7 +13,7 @@ import { toast } from "sonner";
 import {
   MapPin, Factory, Plus, Trash2, Route as RouteIcon, Save, Loader2, ListChecks,
   Map as MapIcon, Satellite, Pencil, Check, X, Crosshair, Truck, Navigation, Copy, ExternalLink, Search,
-  Package, CalendarDays, Printer, TrainFront,
+  Package, CalendarDays, Printer, TrainFront, Milestone,
 } from "lucide-react";
 import DatePicker from "@/components/DatePicker";
 import { todayIso } from "@/lib/dates";
@@ -114,6 +114,16 @@ const factoryIcon = L.divIcon({
 const phatakIcon = L.divIcon({
   className: "",
   html: `<div style="background:#b91c1c;color:white;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 5px rgba(0,0,0,.45);border:2px solid white;font-weight:900;font-size:13px;line-height:1">✕</div>`,
+  iconSize: [22, 22],
+  iconAnchor: [11, 11],
+});
+
+// User-marked flyover / road-over-bridge — green bridge disc. The "Avoid
+// railway crossing" route is forced through these, treating that rail crossing
+// as grade-separated (over the flyover) instead of an at-grade phatak.
+const flyoverIcon = L.divIcon({
+  className: "",
+  html: `<div style="background:#047857;color:white;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 5px rgba(0,0,0,.45);border:2px solid white;font-weight:900;font-size:12px;line-height:1">⤴</div>`,
   iconSize: [22, 22],
   iconAnchor: [11, 11],
 });
@@ -219,6 +229,9 @@ export default function TransportRoutes() {
   const [pickMode, setPickMode] = useState(false);
   const [phataks, setPhataks] = useState([]);            // user-marked railway crossings
   const [phatakMode, setPhatakMode] = useState(false);
+  const [flyovers, setFlyovers] = useState([]);          // user-marked flyovers / ROBs
+  const [flyoverMode, setFlyoverMode] = useState(false);
+  const [factoryMode, setFactoryMode] = useState(false); // set route start point (factory)
   const [busy, setBusy] = useState({ adding: false, optimizing: false, saving: false });
   const [result, setResult] = useState(null);            // {order, total_distance_km, total_duration_min, geometry, engine}
   const [mapStyle, setMapStyle] = useState("map");
@@ -361,16 +374,18 @@ export default function TransportRoutes() {
 
   const loadAll = async () => {
     try {
-      const [fac, tr, sv, ph] = await Promise.all([
+      const [fac, tr, sv, ph, fo] = await Promise.all([
         api.get("/transport/factory"),
         api.get("/transports"),
         api.get("/transport/routes"),
         api.get("/rail-crossings"),
+        api.get("/flyovers"),
       ]);
       if (fac?.data) setFactory(fac.data);
       setTransports(tr.data || []);
       setRoutes(sv.data || []);
       setPhataks(ph.data || []);
+      setFlyovers(fo.data || []);
     } catch (e) {
       // Silent — page loads even if one call fails.
     }
@@ -444,6 +459,42 @@ export default function TransportRoutes() {
       toast.success("Phatak removed.");
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Delete failed");
+    }
+  };
+
+  // Mark / remove a flyover (ROB). The "Avoid railway crossing" route is FORCED
+  // through marked flyovers and treats that crossing as grade-separated, so the
+  // route uses the flyover instead of the at-grade phatak.
+  const addFlyover = async (lat, lng) => {
+    try {
+      const r = await api.post("/flyovers", { lat, lng });
+      setFlyovers((prev) => [...prev, r.data]);
+      toast.success("Flyover marked. Avoid-route ab isse hokar jaayega.");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not mark flyover");
+    }
+  };
+
+  const deleteFlyover = async (f) => {
+    if (!window.confirm("Delete this flyover marker?")) return;
+    try {
+      await api.delete(`/flyovers/${f.id}`);
+      setFlyovers((prev) => prev.filter((x) => x.id !== f.id));
+      toast.success("Flyover removed.");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Delete failed");
+    }
+  };
+
+  // Change the route START POINT (factory location). Saved to the backend and
+  // used as the origin for every optimised route.
+  const setFactoryLocation = async (lat, lng) => {
+    try {
+      const r = await api.put("/transport/factory", { lat, lng, label: factory.label || "JK Products Factory" });
+      setFactory(r.data);
+      toast.success("Start point updated. Route ab yahan se banega.");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not update start point");
     }
   };
 
@@ -907,12 +958,30 @@ export default function TransportRoutes() {
           </span>
           <button
             type="button"
-            onClick={() => { setPhatakMode((v) => !v); setPickMode(false); }}
+            onClick={() => { setPhatakMode((v) => !v); setPickMode(false); setFlyoverMode(false); }}
             className={`inline-flex items-center gap-1 text-[11px] font-bold uppercase tracking-wider px-2 py-1 rounded-sm border ${phatakMode ? "bg-[#b91c1c] text-white border-[#b91c1c]" : "bg-white text-[#b91c1c] border-red-200 hover:bg-red-50"}`}
             data-testid="tr-phatak-mode"
             title="Map par railway phatak par click karke mark karein — Avoid route usse flyover se skip karega"
           >
             <TrainFront className="w-3.5 h-3.5" /> {phatakMode ? "Click phatak on map…" : "Mark phatak"}
+          </button>
+          <button
+            type="button"
+            onClick={() => { setFlyoverMode((v) => !v); setPickMode(false); setPhatakMode(false); }}
+            className={`inline-flex items-center gap-1 text-[11px] font-bold uppercase tracking-wider px-2 py-1 rounded-sm border ${flyoverMode ? "bg-[#047857] text-white border-[#047857]" : "bg-white text-[#047857] border-emerald-200 hover:bg-emerald-50"}`}
+            data-testid="tr-flyover-mode"
+            title="Map par flyover/pul par click karke mark karein — Avoid route isse hokar jaayega (railway line cross nahi karega)"
+          >
+            <Milestone className="w-3.5 h-3.5" /> {flyoverMode ? "Click flyover on map…" : "Mark flyover"}
+          </button>
+          <button
+            type="button"
+            onClick={() => { setFactoryMode((v) => !v); setPickMode(false); setPhatakMode(false); setFlyoverMode(false); }}
+            className={`inline-flex items-center gap-1 text-[11px] font-bold uppercase tracking-wider px-2 py-1 rounded-sm border ${factoryMode ? "bg-[#111827] text-white border-[#111827]" : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"}`}
+            data-testid="tr-factory-mode"
+            title="Route ka start point (factory) badlein — map par nayi location par click karein"
+          >
+            <Crosshair className="w-3.5 h-3.5" /> {factoryMode ? "Click start point on map…" : "Set start point"}
           </button>
           <div className="ml-auto inline-flex rounded-sm border border-slate-200 overflow-hidden">
             <button
@@ -935,7 +1004,7 @@ export default function TransportRoutes() {
           <MapContainer
             center={[factory.lat, factory.lng]}
             zoom={10}
-            style={{ height: "100%", width: "100%", cursor: pickMode || phatakMode ? "crosshair" : "" }}
+            style={{ height: "100%", width: "100%", cursor: pickMode || phatakMode || flyoverMode || factoryMode ? "crosshair" : "" }}
             scrollWheelZoom
           >
             {mapStyle === "map" ? (
@@ -961,10 +1030,19 @@ export default function TransportRoutes() {
               </>
             )}
             <ClickToPick
-              enabled={pickMode || phatakMode}
+              enabled={pickMode || phatakMode || flyoverMode || factoryMode}
               onPick={({ lat, lng }) => {
                 if (phatakMode) {
                   addPhatak(lat, lng);
+                  return;
+                }
+                if (flyoverMode) {
+                  addFlyover(lat, lng);
+                  return;
+                }
+                if (factoryMode) {
+                  setFactoryLocation(lat, lng);
+                  setFactoryMode(false);
                   return;
                 }
                 setDraft((d) => ({ ...d, lat: lat.toFixed(6), lng: lng.toFixed(6) }));
@@ -974,7 +1052,13 @@ export default function TransportRoutes() {
             />
 
             <Marker position={[factory.lat, factory.lng]} icon={factoryIcon}>
-              <Popup><b>Factory</b><br />{factory.label}</Popup>
+              <Popup>
+                <b>Start point (Factory)</b><br />{factory.label}<br />
+                <span style={{ fontFamily: "monospace" }}>
+                  {Number(factory.lat).toFixed(5)}, {Number(factory.lng).toFixed(5)}
+                </span><br />
+                <span style={{ color: "#111827" }}>Badalne ke liye "Set start point" par click karein.</span>
+              </Popup>
             </Marker>
 
             {/* User-marked railway phataks (red ✕) — always avoided by the
@@ -990,6 +1074,23 @@ export default function TransportRoutes() {
                   <b>{p.label || "Railway phatak"}</b><br />
                   Avoid-route isse flyover se skip karta hai.<br />
                   <span style={{ color: "#b91c1c" }}>Delete karne ke liye marker par click karein.</span>
+                </Popup>
+              </Marker>
+            ))}
+
+            {/* User-marked flyovers (green ⤴) — the "Avoid railway crossing"
+                option is forced through these. Click a marker to delete it. */}
+            {flyovers.map((f) => (
+              <Marker
+                key={`flyover-${f.id}`}
+                position={[f.lat, f.lng]}
+                icon={flyoverIcon}
+                eventHandlers={{ click: () => deleteFlyover(f) }}
+              >
+                <Popup>
+                  <b>{f.label || "Flyover"}</b><br />
+                  Avoid-route isse hokar jaayega (railway cross nahi karega).<br />
+                  <span style={{ color: "#047857" }}>Delete karne ke liye marker par click karein.</span>
                 </Popup>
               </Marker>
             ))}
